@@ -990,3 +990,7 @@ input {
   font-weight: 600;
   color: var(--text-primary);
 }
+
+.card-math {
+  background-color: #2b3536 !important;
+}

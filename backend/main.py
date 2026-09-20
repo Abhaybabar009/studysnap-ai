@@ -7,7 +7,8 @@ import os
 import shutil
 import uuid
 from fastapi.staticfiles import StaticFiles
-from rag import ingest_document, chat_with_context, get_all_sources, delete_source, generate_podcast_script, generate_tts_audio, generate_infographic_image, generate_mind_map_data
+from rag import ingest_document, chat_with_context, get_all_sources, delete_source, generate_podcast_script, generate_tts_audio, generate_infographic_image, generate_mind_map_data, lm_studio_client, MODEL_NAME
+from math_solver import solve_math_problem, solve_math_problem_sympy
 
 app = FastAPI(title="StudySnap AI Backend")
 
@@ -45,6 +46,10 @@ class MindMapRequest(BaseModel):
     custom_prompt: str = ""
     response_language: Optional[str] = "English"
 
+class MathSolverRequest(BaseModel):
+    problem: str
+    response_language: Optional[str] = "English"
+
 class UrlRequest(BaseModel):
     url: str
 
@@ -64,8 +69,9 @@ async def upload_sources(files: List[UploadFile] = File(...)):
             doc_meta = ingest_document(file_path, file.filename, file_id)
             uploaded_sources.append(doc_meta)
         except Exception as e:
+            import traceback
             print(f"Error processing {file.filename}: {e}")
-            # Continue with other files
+            traceback.print_exc()
             pass
             
     if not uploaded_sources:
@@ -79,29 +85,40 @@ async def add_url_source(request: UrlRequest):
     try:
         url = request.url
         file_id = str(uuid.uuid4())
-        # Pass the URL directly as the filename, file_path can be empty or None since the function handles it
         doc_meta = ingest_document("", url, file_id)
         return {"success": True, "source": doc_meta}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/sources")
 async def list_sources():
     """List all ingested sources from the database."""
-    sources = get_all_sources()
-    return {"sources": sources}
+    try:
+        sources = get_all_sources()
+        return {"sources": sources}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"sources": []}
 
 @app.delete("/api/sources/{file_id}")
 async def remove_source(file_id: str):
     """Delete a source from ChromaDB."""
     try:
         delete_source(file_id)
-        # We should also try to delete the local file if we stored it
-        for filename in os.listdir("uploads"):
-            if filename.startswith(file_id):
-                os.remove(os.path.join("uploads", filename))
+        if os.path.exists("uploads"):
+            for filename in os.listdir("uploads"):
+                if filename.startswith(file_id):
+                    try:
+                        os.remove(os.path.join("uploads", filename))
+                    except Exception:
+                        pass
         return {"success": True}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
@@ -116,6 +133,8 @@ async def chat(request: ChatRequest):
         )
         return {"response": response_text, "sources": sources_used}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/audio-overview")
@@ -126,6 +145,8 @@ async def create_audio_overview(request: AudioOverviewRequest):
         audio_filename = await generate_tts_audio(script_json)
         return {"success": True, "audio_url": f"http://localhost:8000/uploads/{audio_filename}"}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/infographic")
@@ -141,6 +162,8 @@ async def create_infographic(request: InfographicRequest):
         )
         return {"success": True, "image_url": f"http://localhost:8000/uploads/{image_filename}"}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/mindmap")
@@ -154,7 +177,24 @@ async def create_mind_map(request: MindMapRequest):
         )
         return {"success": True, "mind_map": mind_map_data}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/math/solve")
+async def solve_math(request: MathSolverRequest):
+    """Solve math problem using SymPy deterministic solver and optional LLM enrichment."""
+    try:
+        result = await solve_math_problem(request.problem, lm_studio_client, MODEL_NAME)
+        return {"success": True, "result": result}
+    except Exception as e:
+        try:
+            result = solve_math_problem_sympy(request.problem)
+            return {"success": True, "result": result}
+        except Exception as inner_e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

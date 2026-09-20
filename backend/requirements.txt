@@ -15,4 +15,7 @@ openai-whisper==20250625
 edge-tts==7.0.0
 pydub==0.25.1
 aiohttp==3.10.11
-
+pillow
+pytesseract
+easyocr
+sympy

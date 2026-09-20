@@ -9,7 +9,7 @@ import {
   ChevronDown, FileText, FileAudio, FileVideo, FileBarChart, Network,
   BrainCircuit, Layers, MessageSquare, Sparkles,
   ArrowRight, MoreVertical, PanelLeft, PanelRight,
-  Table, PlaySquare, PenTool, Loader2, Globe, TrendingUp, Headphones,
+  PenTool, Loader2, Globe, TrendingUp, Headphones, Calculator,
   ChevronRight, Maximize2, Trash2, Undo2, Redo2, Bold, Italic, Link, Code, Image, MoreHorizontal, FilePlus2
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -18,6 +18,7 @@ import './index.css';
 function App() {
   const [sources, setSources] = useState<any[]>([]);
   const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
+  const [selectedImagePreview, setSelectedImagePreview] = useState<any | null>(null);
   const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
   const [sessions, setSessions] = useState<{ id: string, title: string, messages: { role: string, content: string }[] }[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -254,6 +255,7 @@ function App() {
       case 'table': prompt = "Extract and organize key data points from the text into a structured, exportable Markdown table."; break;
       case 'pyq': prompt = "Analyze the provided previous year question papers. Use mathematical probability and pattern recognition to identify trends, frequency of topics, and weightage. Based on this analysis, predict the most likely questions and high-yield topics for the upcoming exam."; break;
       case 'audionotes': prompt = "Convert the provided audio transcript into structured educational notes using Markdown. You are an expert educational assistant that creates clear, structured study notes. You MUST include all five sections with these exact headings: # Title, ## Key Points, ## Explanation, ## Examples, ## Summary in detailed."; break;
+      case 'math': prompt = "Solve the mathematical problems, formulas, equations, or calculations present in the selected sources step-by-step with verified formulas, calculations, and clear Markdown LaTeX formatting."; break;
     }
     if (prompt) {
       const finalPrompt = responseLanguage !== 'English'
@@ -295,6 +297,10 @@ function App() {
             <div style={{ width: '32px', height: '1px', backgroundColor: 'var(--border-color)', marginBottom: '16px', flexShrink: 0 }} />
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', overflowX: 'hidden', padding: '0 8px', scrollbarWidth: 'none', flex: 1, alignItems: 'center' }}>
+              <button onClick={() => { setIsRightSidebarOpen(true); handleStudioAction('math'); }} style={{ width: '40px', height: '40px', minHeight: '40px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#2b3536', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.05)', position: 'relative' }} title="Math Solver">
+                <Calculator size={18} style={{ color: '#a3e5d8' }} />
+                <Plus size={10} strokeWidth={3} style={{ position: 'absolute', bottom: 4, right: 4, color: '#e3e3e3' }} />
+              </button>
               <button onClick={() => { setIsRightSidebarOpen(true); handleStudioAction('pyq'); }} style={{ width: '40px', height: '40px', minHeight: '40px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#332b26', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.05)', position: 'relative' }} title="PYQ Analysis">
                 <TrendingUp size={18} style={{ color: '#ffcc99' }} />
                 <Plus size={10} strokeWidth={3} style={{ position: 'absolute', bottom: 4, right: 4, color: '#e3e3e3' }} />
@@ -428,6 +434,7 @@ function App() {
                   </div> */}
 
                   <div className="studio-grid">
+                    <div className="studio-card card-math" onClick={() => handleStudioAction('math')} style={{ cursor: 'pointer' }}><div className="studio-card-left"><Calculator size={18} className="studio-card-icon" style={{ color: '#a3e5d8' }} /><span className="studio-card-title">Math Solver</span></div><ChevronDown size={16} className="studio-card-arrow" style={{ transform: 'rotate(-90deg)' }} /></div>
                     <div className="studio-card card-pyq" onClick={() => handleStudioAction('pyq')} style={{ cursor: 'pointer' }}><div className="studio-card-left"><TrendingUp size={18} className="studio-card-icon" style={{ color: '#ffcc99' }} /><span className="studio-card-title">PYQ Analysis</span></div><ChevronDown size={16} className="studio-card-arrow" style={{ transform: 'rotate(-90deg)' }} /></div>
                     <div className="studio-card card-audionotes" onClick={() => handleStudioAction('audionotes')} style={{ cursor: 'pointer' }}><div className="studio-card-left"><Headphones size={18} className="studio-card-icon" style={{ color: '#c7a8fa' }} /><span className="studio-card-title">Audio to Notes</span></div><ChevronDown size={16} className="studio-card-arrow" style={{ transform: 'rotate(-90deg)' }} /></div>
                     <div className="studio-card card-audio" onClick={() => setIsAudioModalOpen(true)} style={{ cursor: 'pointer' }}>
@@ -755,33 +762,60 @@ function App() {
                   <FileText size={32} className="empty-sources-icon" />
                   <div className="empty-sources-title">Saved sources will appear here</div>
                   <div className="empty-sources-desc">
-                    Click Add source above to add PDFs, websites, text, videos, or audio files. Or import a file directly from Google Drive.
+                    Click Add source above to add PDFs, Images, websites, text, videos, or audio files.
                   </div>
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
-                  {sources.map(src => (
-                    <div key={src.id} style={{ padding: '12px', backgroundColor: 'var(--bg-button)', borderRadius: '8px', fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: selectedSourceIds.has(src.id) ? '1px solid var(--accent-color)' : '1px solid transparent', opacity: selectedSourceIds.has(src.id) ? 1 : 0.6 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                        <input
-                          type="checkbox"
-                          checked={selectedSourceIds.has(src.id)}
-                          onChange={(e) => {
-                            const newSet = new Set(selectedSourceIds);
-                            if (e.target.checked) newSet.add(src.id);
-                            else newSet.delete(src.id);
-                            setSelectedSourceIds(newSet);
-                          }}
-                          style={{ accentColor: 'var(--accent-color)', width: '16px', height: '16px', cursor: 'pointer', flexShrink: 0 }}
-                        />
-                        <FileText size={16} color="var(--accent-color)" style={{ flexShrink: 0 }} />
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={src.filename}>{src.filename}</span>
+                  {sources.map(src => {
+                    const isImage = src.type === 'image' || src.source_type === 'image' || /\.(jpg|jpeg|png|webp)$/i.test(src.filename);
+                    const imageUrl = src.url || `${backendUrl}/uploads/${src.id}_${src.filename}`;
+
+                    return (
+                      <div key={src.id} style={{ padding: '10px 12px', backgroundColor: 'var(--bg-button)', borderRadius: '8px', fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: selectedSourceIds.has(src.id) ? '1px solid var(--accent-color)' : '1px solid transparent', opacity: selectedSourceIds.has(src.id) ? 1 : 0.6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden', flex: 1 }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedSourceIds.has(src.id)}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedSourceIds);
+                              if (e.target.checked) newSet.add(src.id);
+                              else newSet.delete(src.id);
+                              setSelectedSourceIds(newSet);
+                            }}
+                            style={{ accentColor: 'var(--accent-color)', width: '16px', height: '16px', cursor: 'pointer', flexShrink: 0 }}
+                          />
+
+                          {isImage ? (
+                            <div 
+                              onClick={() => setSelectedImagePreview({ ...src, url: imageUrl })}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', overflow: 'hidden', flex: 1 }}
+                              title="Click to view image preview"
+                            >
+                              <img 
+                                src={imageUrl} 
+                                alt={src.filename} 
+                                onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                                style={{ width: '28px', height: '28px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)', flexShrink: 0 }} 
+                              />
+                              <Image size={16} color="var(--accent-color)" style={{ flexShrink: 0 }} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }} title={src.filename}>{src.filename}</span>
+                              <span style={{ backgroundColor: 'rgba(168, 199, 250, 0.15)', color: 'var(--accent-color)', padding: '1px 6px', borderRadius: '10px', fontSize: '10px', fontWeight: 600, flexShrink: 0 }}>IMAGE</span>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', flex: 1 }}>
+                              <FileText size={16} color="var(--accent-color)" style={{ flexShrink: 0 }} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={src.filename}>{src.filename}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <button onClick={() => handleRemoveSource(src.id)} className="icon-btn" style={{ width: '24px', height: '24px', flexShrink: 0 }} title="Remove Source">
+                          <X size={14} />
+                        </button>
                       </div>
-                      <button onClick={() => handleRemoveSource(src.id)} className="icon-btn" style={{ width: '24px', height: '24px', flexShrink: 0 }} title="Remove Source">
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -789,6 +823,48 @@ function App() {
         )}
 
       </main>
+
+      {/* Image Preview Lightbox Modal */}
+      {selectedImagePreview && (
+        <div 
+          className="modal-overlay" 
+          style={{ zIndex: 1000, backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
+          onClick={() => setSelectedImagePreview(null)}
+        >
+          <div 
+            style={{ backgroundColor: '#1e1f22', border: '1px solid var(--border-color)', borderRadius: '16px', maxWidth: '850px', width: '90%', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,0.8)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--border-color)', backgroundColor: '#18191c' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
+                <Image size={20} color="var(--accent-color)" />
+                <span style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selectedImagePreview.filename}</span>
+                <span style={{ backgroundColor: 'rgba(168, 199, 250, 0.15)', color: 'var(--accent-color)', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 600, flexShrink: 0 }}>IMAGE SOURCE</span>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button 
+                  className="icon-btn danger" 
+                  onClick={() => { handleRemoveSource(selectedImagePreview.id); setSelectedImagePreview(null); }}
+                  title="Delete Image Source"
+                  style={{ color: '#f87171' }}
+                >
+                  <Trash2 size={18} />
+                </button>
+                <button className="icon-btn" onClick={() => setSelectedImagePreview(null)} title="Close Preview">
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <div style={{ padding: '24px', flex: 1, overflowY: 'auto', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#121315', minHeight: '300px' }}>
+              <img 
+                src={selectedImagePreview.url || `${backendUrl}/uploads/${selectedImagePreview.id}_${selectedImagePreview.filename}`}
+                alt={selectedImagePreview.filename}
+                style={{ maxWidth: '100%', maxHeight: '68vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 4px 24px rgba(0,0,0,0.6)' }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <AddSourceModal
         isOpen={isModalOpen}
@@ -821,3 +897,4 @@ function App() {
 }
 
 export default App;
+
