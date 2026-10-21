@@ -128,18 +128,22 @@ export default function AddSourceModal({ isOpen, onClose, onUploadSuccess, backe
       targetFiles.forEach(file => formData.append('files', file));
 
       try {
+        const isImageTab = activeTab === 'image';
         const progressTimer = setInterval(() => {
           setUploadProgress(prev => {
-            if (prev < 50) {
-              setStatusText('Processing OCR & Visual Layout...');
+            if (prev < 40) {
+              setStatusText(isImageTab ? 'Analyzing image...' : 'Processing document...');
               return prev + 15;
-            } else if (prev < 85) {
-              setStatusText('Indexing into Vector Store...');
+            } else if (prev < 65) {
+              setStatusText(isImageTab ? 'Extracting content...' : 'Extracting text...');
+              return prev + 15;
+            } else if (prev < 90) {
+              setStatusText('Indexing...');
               return prev + 10;
             }
             return prev;
           });
-        }, 700);
+        }, 600);
 
         const res = await fetch(`${backendUrl}/api/sources/upload`, {
           method: 'POST',
@@ -158,13 +162,13 @@ export default function AddSourceModal({ isOpen, onClose, onUploadSuccess, backe
           }, 400);
         } else {
           setStatusText('Failed');
-          setErrorMessage(data.detail || 'Upload or image processing failed.');
+          setErrorMessage(data.detail || (isImageTab ? 'Image uploaded, but analysis failed.' : 'Upload or processing failed.'));
           setIsUploading(false);
         }
       } catch (err: any) {
         console.error("Upload Error", err);
         setStatusText('Failed');
-        setErrorMessage('Failed to connect to backend server or upload files.');
+        setErrorMessage(activeTab === 'image' ? 'Image uploaded, but analysis failed.' : 'Failed to connect to backend server or upload files.');
         setIsUploading(false);
       }
     } else if (activeTab === 'url' && urlInput.trim()) {

@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import csv
 import io
 import requests
@@ -20,6 +21,7 @@ from pydub import AudioSegment
 import urllib.parse
 import aiohttp
 from math_solver import solve_math_problem_sympy, solve_math_problem
+from PIL import Image
 
 # Initialize ChromaDB
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
@@ -32,8 +34,33 @@ except Exception:
 collection = chroma_client.get_or_create_collection(name="studysnap_collection", embedding_function=emb_fn)
 
 # Initialize LM Studio client
-lm_studio_client = AsyncOpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
-MODEL_NAME = "my_custom_200m_model_gguf/AnishLandage/SnapStudyAI"
+LM_STUDIO_URL = "http://localhost:1234/v1"
+lm_studio_client = AsyncOpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
+
+def get_available_models_sync() -> list:
+    """Fetch active models from LM Studio endpoints."""
+    try:
+        resp = requests.get(f"{LM_STUDIO_URL}/models", timeout=2)
+        if resp.status_code == 200:
+            data = resp.json()
+            return [m.get("id") for m in data.get("data", []) if m.get("id")]
+    except Exception:
+        pass
+    return []
+
+def get_best_model_name(is_vision: bool = False) -> str:
+    """Dynamically determine the best model identifier from LM Studio."""
+    models = get_available_models_sync()
+    if is_vision:
+        vision_models = [m for m in models if any(k in m.lower() for k in ["vl", "vision", "qwen3-vl", "llava"])]
+        if vision_models:
+            return vision_models[0]
+    text_models = [m for m in models if "embed" not in m.lower()]
+    if text_models:
+        return text_models[0]
+    if models:
+        return models[0]
+    return "qwen/qwen3-vl-8b"
 
 def extract_youtube_transcript(url: str) -> str:
     try:
@@ -51,18 +78,15 @@ def extract_youtube_transcript(url: str) -> str:
         ytt_api = YouTubeTranscriptApi()
         
         try:
-            # Try getting standard English or auto-generated
             transcript_list = ytt_api.list(video_id)
             transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB', 'hi'])
             data = transcript.fetch()
         except:
             try:
-                # Fallback to any auto-generated transcript if manual English isn't found
                 transcript_list = ytt_api.list(video_id)
-                transcript = list(transcript_list)[0] # Just get the first available one
+                transcript = list(transcript_list)[0]
                 data = transcript.fetch()
             except Exception as e:
-                # If all else fails, use the basic method
                 data = ytt_api.fetch(video_id)
                 
         return " ".join([t.text if hasattr(t, 'text') else t.get('text', '') for t in data])
@@ -75,7 +99,6 @@ def extract_webpage(url: str) -> str:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Remove scripts and styles
         for script in soup(["script", "style"]):
             script.extract()
         return soup.get_text(separator="\n", strip=True)
@@ -88,8 +111,6 @@ try:
 except Exception as _w_err:
     whisper = None
     print(f"Whisper import warning: {_w_err}")
-
-from PIL import Image
 
 _easyocr_reader = None
 
@@ -104,56 +125,206 @@ def get_ocr_reader():
             _easyocr_reader = False
     return _easyocr_reader
 
-def extract_image_content(file_path: str, filename: str) -> str:
-    """Extract text via OCR and visual description from an image file (JPG, JPEG, PNG, WEBP)."""
-    extracted_text = ""
-    visual_description = ""
+def format_image_analysis_to_markdown(analysis: dict) -> str:
+    filename = analysis.get("filename", "image")
+    md_parts = [f"IMAGE SOURCE: {filename}"]
     
+    if desc := analysis.get("image_description"):
+        md_parts.append(f"### IMAGE OVERVIEW & DESCRIPTION:\n{desc}")
+        
+    if elem := analysis.get("visual_elements"):
+        val_str = "\n".join([f"- {item}" for item in elem]) if isinstance(elem, list) else str(elem)
+        md_parts.append(f"### VISUAL ELEMENTS & DIAGRAM COMPONENTS:\n{val_str}")
+        
+    if rel := analysis.get("relationships"):
+        val_str = "\n".join([f"- {item}" for item in rel]) if isinstance(rel, list) else str(rel)
+        md_parts.append(f"### RELATIONSHIPS & DIAGRAM FLOW:\n{val_str}")
+
+    if text := analysis.get("extracted_text"):
+        md_parts.append(f"### EXTRACTED TEXT & LABELS:\n{text}")
+        
+    if info := analysis.get("important_information"):
+        val_str = "\n".join([f"- {item}" for item in info]) if isinstance(info, list) else str(info)
+        md_parts.append(f"### IMPORTANT CONCEPTS & SUMMARY:\n{val_str}")
+        
+    if math_sol := analysis.get("math_solution"):
+        md_parts.append(f"### VERIFIED MATHEMATICAL SOLUTION:\n{math_sol}")
+        
+    return "\n\n".join(md_parts)
+
+async def extract_image_content_async(file_path: str, filename: str, file_id: str = "") -> str:
+    """
+    Extract visual description, diagram components, relationships, OCR text,
+    and math from an image using Vision LLM + OCR + SymPy.
+    Caches structured JSON results to disk for fast reuse.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return f"IMAGE SOURCE: {filename}\n### IMAGE OVERVIEW & DESCRIPTION:\nImage file provided for study context."
+
+    cache_path = f"{file_path}.analysis.json"
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                analysis = json.load(f)
+                return format_image_analysis_to_markdown(analysis)
+        except Exception as e:
+            print(f"Error reading image analysis cache for {filename}: {e}")
+
+    extracted_text = ""
+    image_description = ""
+    visual_elements = ""
+    relationships = ""
+    important_info = ""
+    math_solution = ""
+    detected_math = ""
+
+    # 1. Vision LLM Analysis via LM Studio (Fast & Full Visual Understanding)
     try:
-        with Image.open(file_path) as img:
-            img_format = img.format or filename.split('.')[-1].upper()
-            width, height = img.size
-            mode = img.mode
-            visual_description = f"Image '{filename}' ({img_format} format, {width}x{height} resolution, {mode} color mode)."
-            
-            # Try pytesseract first if tesseract is installed
-            try:
-                import pytesseract
-                ocr_result = pytesseract.image_to_string(img).strip()
-                if ocr_result:
-                    extracted_text = ocr_result
-            except Exception:
-                pass
-                
-            # If pytesseract didn't yield text, try easyocr if model is downloaded
-            if not extracted_text:
+        with open(file_path, "rb") as f_img:
+            b64_str = base64.b64encode(f_img.read()).decode("utf-8")
+
+        ext_mime = filename.split('.')[-1].lower() if '.' in filename else "png"
+        mime_type = "image/png" if ext_mime in ['png', 'webp'] else "image/jpeg"
+        vision_model = get_best_model_name(is_vision=True)
+
+        vision_prompt = (
+            "Analyze this image thoroughly for an educational RAG study assistant.\n"
+            "Return a JSON object with EXACTLY the following keys:\n"
+            "{\n"
+            '  "image_description": "Comprehensive explanation of what the image, diagram, architecture, or flowchart represents.",\n'
+            '  "extracted_text": "All visible titles, headings, node labels, text, and numbers in the image.",\n'
+            '  "visual_elements": "List of components, boxes, icons, servers, routers, clients, tables, or visual nodes.",\n'
+            '  "relationships": "Step-by-step description of connections, arrows, sequence, or workflow shown in the diagram.",\n'
+            '  "important_information": "Key educational concepts, summary points, or architectural takeaways.",\n'
+            '  "detected_math": "Any mathematical formulas or equations present in the image (or empty string if none)."\n'
+            "}\n"
+            "Return strictly valid JSON without extra text."
+        )
+
+        response = await lm_studio_client.chat.completions.create(
+            model=vision_model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": vision_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{b64_str}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0.2,
+            max_tokens=1500
+        )
+
+        raw_content = response.choices[0].message.content.strip()
+        parsed = {}
+        try:
+            json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+            else:
+                parsed = json.loads(raw_content)
+        except Exception:
+            image_description = raw_content
+
+        if parsed:
+            image_description = parsed.get("image_description", image_description)
+            extracted_text = parsed.get("extracted_text", "")
+            visual_elements = parsed.get("visual_elements", "")
+            relationships = parsed.get("relationships", "")
+            important_info = parsed.get("important_information", "")
+            detected_math = parsed.get("detected_math", "")
+
+    except Exception as v_err:
+        print(f"Vision LLM analysis notice for {filename}: {v_err}")
+
+    # 2. OCR Fallback if Vision LLM was offline or text missing
+    if not extracted_text:
+        try:
+            with Image.open(file_path) as img:
                 try:
-                    import easyocr
-                    model_dir = os.path.expanduser('~/.EasyOCR/model')
-                    if os.path.exists(model_dir) and len(os.listdir(model_dir)) >= 2:
+                    import pytesseract
+                    ocr_result = pytesseract.image_to_string(img).strip()
+                    if ocr_result:
+                        extracted_text = ocr_result
+                except Exception:
+                    pass
+
+                if not extracted_text:
+                    try:
                         reader = get_ocr_reader()
                         if reader and reader is not False:
                             results = reader.readtext(file_path, detail=0)
                             if results:
                                 extracted_text = "\n".join(results).strip()
-                except Exception as e:
-                    print(f"EasyOCR extraction error: {e}")
-                    
-            content_parts = []
-            content_parts.append(f"Image: {filename}")
-            content_parts.append(f"Visual Overview: {visual_description}")
-            
-            if extracted_text:
-                content_parts.append(f"Searchable Content & Extracted Text:\n{extracted_text}")
-            else:
-                content_parts.append(f"Searchable Content: Diagram or visual image '{filename}'. Contains visual study material, graphical components, and structural layout.")
-                
-            return "\n\n".join(content_parts)
-            
-    except Exception as e:
-        print(f"Image processing error for {filename}: {e}")
-        return f"Image source: {filename}. Description: Visual diagram/image provided for study context."
+                    except Exception as e:
+                        print(f"EasyOCR extraction error: {e}")
+        except Exception as e:
+            print(f"Image load error: {e}")
 
+    # 3. Fallback heuristic synthesis if Vision LLM was offline
+    if not image_description:
+        lines = [line.strip() for line in extracted_text.splitlines() if line.strip()]
+        if lines:
+            image_description = f"Visual diagram / image source '{filename}' titled '{lines[0]}'."
+            visual_elements = "Extracted components & text labels: " + ", ".join(lines)
+            flow_steps = [f"{idx}. {line}" for idx, line in enumerate(lines, 1)]
+            relationships = "Diagram Flow & Components:\n" + "\n".join(flow_steps)
+            important_info = f"Key concepts from '{filename}': " + ", ".join(lines[:6])
+        else:
+            image_description = f"Visual diagram / illustration source '{filename}'."
+            visual_elements = f"Graphical layout and components present in image '{filename}'."
+            relationships = f"Visual layout in '{filename}'."
+            important_info = f"Visual study diagram from '{filename}'."
+
+    # 4. Math Solver Integration if math detected
+    combined_math_target = f"{extracted_text}\n{detected_math}"
+    if combined_math_target and any(c in combined_math_target for c in ['=', '+', '-', '*', '/', '^', '√', 'd/dx', '∫']):
+        try:
+            math_res = solve_math_problem_sympy(combined_math_target)
+            if math_res.get("steps") and math_res.get("verification", {}).get("status") == "verified":
+                math_solution = format_sympy_result_to_markdown(math_res)
+        except Exception as m_err:
+            print(f"Math solver error on image content: {m_err}")
+
+    # 5. Save Structured Representation to Cache
+    analysis_data = {
+        "source_type": "image",
+        "filename": filename,
+        "file_id": file_id,
+        "extracted_text": extracted_text,
+        "image_description": image_description,
+        "visual_elements": visual_elements,
+        "relationships": relationships,
+        "important_information": important_info,
+        "math_solution": math_solution
+    }
+
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f_cache:
+            json.dump(analysis_data, f_cache, indent=2)
+    except Exception as c_err:
+        print(f"Error saving image analysis cache: {c_err}")
+
+    return format_image_analysis_to_markdown(analysis_data)
+
+def extract_image_content(file_path: str, filename: str, file_id: str = "") -> str:
+    """Synchronous wrapper for extract_image_content_async."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(extract_image_content_async(file_path, filename, file_id))
+        else:
+            return asyncio.run(extract_image_content_async(file_path, filename, file_id))
+    except Exception:
+        return asyncio.run(extract_image_content_async(file_path, filename, file_id))
 
 def extract_audio(file_path: str) -> str:
     """Extract text from audio using local Whisper instance."""
@@ -225,7 +396,8 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200):
         start = end - overlap
     return chunks
 
-def ingest_document(file_path: str, filename: str, file_id: str):
+async def ingest_document(file_path: str, filename: str, file_id: str):
+    """Ingest document/image/URL into ChromaDB vector store."""
     text = ""
     ext = filename.split('.')[-1].lower() if '.' in filename else ""
     is_image = ext in ['jpg', 'jpeg', 'png', 'webp'] or (file_path and file_path.lower().endswith(('jpg', 'jpeg', 'png', 'webp')))
@@ -238,12 +410,12 @@ def ingest_document(file_path: str, filename: str, file_id: str):
             text = extract_webpage(filename)
             filename = f"Web: {filename}"
     elif is_image:
-        text = extract_image_content(file_path, filename)
+        text = await extract_image_content_async(file_path, filename, file_id)
     else:
         text = extract_text(file_path, filename)
         
     if not text.strip():
-        raise ValueError("Could not extract any text from the document.")
+        raise ValueError("Could not extract any content from the uploaded file.")
 
     chunks = chunk_text(text)
     ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
@@ -257,6 +429,7 @@ def ingest_document(file_path: str, filename: str, file_id: str):
         "file_id": file_id,
         "source_type": source_type,
         "type": source_type,
+        "filename": filename,
         "url": image_url
     } for _ in chunks]
     
@@ -303,7 +476,6 @@ def delete_source(file_id: str):
     """Delete a source and all its chunks from ChromaDB."""
     collection.delete(where={"file_id": file_id})
 
-
 def format_sympy_result_to_markdown(res: dict) -> str:
     md = f"### 📐 {res.get('problem_type', 'Math Problem Solver')}\n\n"
     if res.get('concept'):
@@ -321,23 +493,40 @@ def format_sympy_result_to_markdown(res: dict) -> str:
     if res.get("formulas"):
         md += "**Formulas:**\n"
         for f in res["formulas"]:
-            md += f"- {f['name']}: `${f['latex']}$`\n"
+            latex_val = f.get('latex', '')
+            if latex_val:
+                if not (latex_val.startswith('$') or latex_val.startswith('\\(')):
+                    latex_val = f"$${latex_val}$$"
+                md += f"- **{f['name']}**:\n{latex_val}\n"
+            else:
+                md += f"- **{f['name']}**\n"
         md += "\n"
         
     if res.get("steps"):
-        md += "**Step-by-Step Solution:**\n"
+        md += "**Step-by-Step Solution:**\n\n"
         for step in res["steps"]:
-            md += f"{step.get('step', 1)}. **{step.get('explanation', '')}**\n"
+            md += f"#### Step {step.get('step', 1)}: {step.get('explanation', '')}\n"
             if step.get("formula"):
-                md += f"   - Formula: `${step['formula']}$`\n"
+                f_str = str(step['formula'])
+                if not (f_str.startswith('$') or f_str.startswith('\\(')):
+                    f_str = f"${f_str}$"
+                md += f"- **Formula**: {f_str}\n"
             if step.get("calculation"):
-                md += f"   - Calculation: `${step['calculation']}$`\n"
+                c_str = str(step['calculation'])
+                if not (c_str.startswith('$') or c_str.startswith('\\(')):
+                    c_str = f"${c_str}$"
+                md += f"- **Calculation**: {c_str}\n"
             if step.get("result"):
-                md += f"   - Result: **{step['result']}**\n"
-        md += "\n"
+                r_str = str(step['result'])
+                if not (r_str.startswith('$') or r_str.startswith('\\(')):
+                    r_str = f"${r_str}$"
+                md += f"- **Result**: {r_str}\n\n"
         
     if res.get("final_answer"):
-        md += f"### ✅ **Final Answer:**\n> **{res['final_answer']}**\n\n"
+        ans_str = str(res['final_answer'])
+        if not (ans_str.startswith('$') or ans_str.startswith('\\(')):
+            ans_str = f"$${ans_str}$$"
+        md += f"### ✅ **Final Answer:**\n\n{ans_str}\n\n"
         
     if res.get("verification", {}).get("status") == "verified":
         md += f"🔍 *Verification*: Verified mathematically using SymPy Engine ({res['verification'].get('result', '')}).\n"
@@ -356,14 +545,15 @@ async def chat_with_context(query: str, history: list = None, selected_source_id
     if is_verified_math:
         math_md = format_sympy_result_to_markdown(sympy_res)
         try:
-            enriched_res = await solve_math_problem(query, lm_studio_client, MODEL_NAME)
+            active_model = get_best_model_name(is_vision=False)
+            enriched_res = await solve_math_problem(query, lm_studio_client, active_model)
             if isinstance(enriched_res, dict) and enriched_res.get("steps"):
                 return format_sympy_result_to_markdown(enriched_res), ["SymPy Engine & Local LLM"]
         except Exception:
             pass
         return math_md, ["SymPy Math Engine"]
         
-    # 2. Document RAG Retrieval
+    # 2. Document & Image RAG Retrieval
     where_clause = None
     if selected_source_ids is not None and len(selected_source_ids) > 0:
         if len(selected_source_ids) == 1:
@@ -378,9 +568,9 @@ async def chat_with_context(query: str, history: list = None, selected_source_id
     
     try:
         if where_clause:
-            results = collection.query(query_texts=[query], n_results=4, where=where_clause)
+            results = collection.query(query_texts=[query], n_results=6, where=where_clause)
         else:
-            results = collection.query(query_texts=[query], n_results=4)
+            results = collection.query(query_texts=[query], n_results=6)
             
         documents = results.get("documents", [[]])[0]
         metadatas = results.get("metadatas", [[]])[0]
@@ -393,11 +583,15 @@ async def chat_with_context(query: str, history: list = None, selected_source_id
         print(f"Chroma DB query warning: {e}")
 
     system_prompt = (
-        f"You are StudySnap AI, a helpful and knowledgeable assistant. "
-        f"Use the provided context to answer the user's question. "
-        f"If mathematical expressions or equations are present, format them clearly with Markdown LaTeX.\n"
-        f"IMPORTANT: You must respond in {response_language}.\n\n"
-        f"Context:\n{context}"
+        "You are StudySnap AI, an advanced educational AI pair programmer and study assistant.\n"
+        "Use the provided source context retrieved from the user's uploaded materials to answer the user's question.\n"
+        "CRITICAL INSTRUCTIONS FOR IMAGE & DIAGRAM QUESTIONS:\n"
+        "1. When the user asks about an uploaded image or diagram (e.g. 'Explain me about the image I have provided'), base your explanation STRICTLY on the retrieved IMAGE OVERVIEW, VISUAL ELEMENTS, EXTRACTED TEXT, and DIAGRAM FLOW present in the context.\n"
+        "2. Structure your explanation cleanly using Markdown headers (e.g., ### Overview, ### Main Components, ### How it works / Step-by-Step Flow, ### Extracted Text & Labels).\n"
+        "3. Only include information that was actually identified from the uploaded image.\n"
+        "4. Do NOT trigger web search or rely on generic unverified assumptions.\n\n"
+        f"IMPORTANT: You must write your ENTIRE response in {response_language}.\n\n"
+        f"Retrieved Source Context:\n{context}"
     )
     
     messages = [{"role": "system", "content": system_prompt}]
@@ -416,24 +610,28 @@ async def chat_with_context(query: str, history: list = None, selected_source_id
 
     messages.append({"role": "user", "content": final_query})
     
+    active_model = get_best_model_name(is_vision=False)
     try:
         response = await lm_studio_client.chat.completions.create(
-            model=MODEL_NAME,
+            model=active_model,
             messages=messages,
             temperature=0.7,
-            max_tokens=1024,
+            max_tokens=1200,
         )
         answer = response.choices[0].message.content
+        if sources_used and "Source:" not in answer and "Sources:" not in answer:
+            src_str = ", ".join(sources_used)
+            answer += f"\n\n**Source:** {src_str}"
         return answer, sources_used
     except Exception as e:
-        print(f"LM Studio LLM Offline/Fallback: {e}")
+        print(f"LM Studio LLM Exception/Fallback: {e}")
         if sympy_res and sympy_res.get("problem_type") != "Unknown / Unresolved":
             return format_sympy_result_to_markdown(sympy_res), ["SymPy Engine"]
         
         if context:
-            return f"**Relevant Context Found from Documents:**\n\n{context[:1000]}\n\n*(Note: Local LLM is offline. Start LM Studio on port 1234 for full AI synthesis.)*", sources_used
+            return f"**Relevant Context Found from Documents & Image Analysis:**\n\n{context[:1500]}\n\n*(Note: LM Studio connection notice. Ensure LM Studio server is active on port 1234.)*", sources_used
             
-        return "StudySnap AI active! Enter any mathematical equation or calculation (e.g. `differentiate x^2 + 3x`, `solve x^2 - 5x + 6 = 0`, `right triangle with legs 3 and 4`), or start LM Studio on port 1234 for full LLM answers.", []
+        return "StudySnap AI active! Ask any question about your uploaded sources or images.", []
 
 async def generate_podcast_script(selected_source_ids: list = None, response_language: str = "English"):
     where_clause = None
@@ -477,10 +675,11 @@ async def generate_podcast_script(selected_source_ids: list = None, response_lan
     )
     
     messages = [{"role": "system", "content": system_prompt}]
+    active_model = get_best_model_name(is_vision=False)
     
     try:
         response = await lm_studio_client.chat.completions.create(
-            model=MODEL_NAME,
+            model=active_model,
             messages=messages,
             temperature=0.7,
             max_tokens=2048,
@@ -504,7 +703,6 @@ async def generate_podcast_script(selected_source_ids: list = None, response_lan
 
 async def generate_tts_audio(script_json):
     audio_files = []
-    
     voices = {
         "Host A": "en-US-ChristopherNeural",
         "Host B": "en-US-AriaNeural"
@@ -599,10 +797,11 @@ async def generate_infographic_image(selected_source_ids: list, style: str, deta
         {"role": "user", "content": f"Here is the source content:\n\n{context[:2000]}"}
     ]
     
+    active_model = get_best_model_name(is_vision=False)
     image_prompt = ""
     try:
         response = await lm_studio_client.chat.completions.create(
-            model=MODEL_NAME,
+            model=active_model,
             messages=messages,
             temperature=0.7,
             max_tokens=500,
@@ -628,7 +827,6 @@ async def generate_infographic_image(selected_source_ids: list, style: str, deta
                     raise ValueError(f"Pollinations API status: {resp.status}")
     except Exception as download_err:
         print(f"Image download error: {download_err}")
-        # Create a basic fallback placeholder image using PIL
         from PIL import Image, ImageDraw
         img = Image.new('RGB', (1024, 1024), color='#1e1e2e')
         d = ImageDraw.Draw(img)
@@ -683,9 +881,10 @@ async def generate_mind_map_data(selected_source_ids: list, custom_prompt: str, 
         {"role": "user", "content": f"Here is the source content:\n\n{context[:2000]}"}
     ]
     
+    active_model = get_best_model_name(is_vision=False)
     try:
         response = await lm_studio_client.chat.completions.create(
-            model=MODEL_NAME,
+            model=active_model,
             messages=messages,
             temperature=0.3,
             max_tokens=2000,

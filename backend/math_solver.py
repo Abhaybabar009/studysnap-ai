@@ -32,6 +32,30 @@ def solve_math_problem_sympy(problem_text: str) -> dict:
     text = problem_text.strip()
     clean_text = clean_math_text(text)
     
+    # Guard: Plain text without numbers, operators, or math keywords is not a math problem
+    has_digits = bool(re.search(r'\d', text))
+    has_math_ops = bool(re.search(r'[=+\-*/^√∫]', text))
+    math_keywords = ['differentiate', 'integrate', 'derivative', 'integral', 'matrix', 'determinant', 'solve', 'equation', 'triangle', 'circle', 'hypotenuse', 'pythagorean', 'quadratic', 'polynomial', 'sin', 'cos', 'tan', 'log', 'ln', 'gcd', 'lcm', 'prime', 'd/dx', 'formula', 'calculation']
+    has_math_keywords = any(kw in text.lower() for kw in math_keywords)
+
+    if not (has_digits or has_math_ops or has_math_keywords):
+        return {
+            "problem": problem_text,
+            "problem_type": "Unknown / Unresolved",
+            "concept": "General Text Query",
+            "given": [],
+            "required": "Unknown",
+            "formulas": [],
+            "steps": [],
+            "final_answer": "Not a mathematical expression.",
+            "verification": {
+                "performed": False,
+                "result": "Unverified",
+                "status": "failed"
+            },
+            "explanation": "Query does not contain mathematical expressions or equations."
+        }
+    
     # 1. Right Triangle (Hypotenuse / Legs)
     # Pattern: right triangle has sides/legs A and B, find hypotenuse
     tri_match = re.search(r'right\s+triangle.*?(?:side|leg|base|height|arm)s?\s*(\d+(?:\.\d+)?)\s*(?:cm|m|units)?\s*(?:and|&|,)\s*(\d+(?:\.\d+)?)\s*(?:cm|m|units)?.*?(?:hypotenuse|third side)', clean_text, re.IGNORECASE)

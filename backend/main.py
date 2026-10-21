@@ -60,13 +60,14 @@ async def upload_sources(files: List[UploadFile] = File(...)):
     for file in files:
         try:
             file_id = str(uuid.uuid4())
-            file_path = f"uploads/{file_id}_{file.filename}"
+            safe_filename = os.path.basename(file.filename)
+            file_path = f"uploads/{file_id}_{safe_filename}"
             
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
                 
             # Process and ingest document into ChromaDB
-            doc_meta = ingest_document(file_path, file.filename, file_id)
+            doc_meta = await ingest_document(file_path, safe_filename, file_id)
             uploaded_sources.append(doc_meta)
         except Exception as e:
             import traceback
@@ -85,7 +86,7 @@ async def add_url_source(request: UrlRequest):
     try:
         url = request.url
         file_id = str(uuid.uuid4())
-        doc_meta = ingest_document("", url, file_id)
+        doc_meta = await ingest_document("", url, file_id)
         return {"success": True, "source": doc_meta}
     except Exception as e:
         import traceback

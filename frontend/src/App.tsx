@@ -14,6 +14,9 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import './index.css';
 function App() {
   const [sources, setSources] = useState<any[]>([]);
@@ -585,7 +588,7 @@ function App() {
                     {msg.role === 'assistant' && <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: 'var(--accent-color)' }}><Sparkles size={16} /> <span>StudySnap AI</span></div>}
                     <div className={msg.role === 'assistant' ? 'markdown-body' : ''}>
                       {msg.role === 'assistant' ? (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{msg.content}</ReactMarkdown>
                       ) : (
                         msg.content
                       )}

@@ -1,0 +1,18 @@
+{
+  "source_type": "image",
+  "filename": "OSI_Model.png",
+  "file_id": "test_e55636b1-9f95-4fa4-b236-157d49150f84",
+  "extracted_text": [
+    "OSI Model Architecture Diagram",
+    "Layer 7 Application Layer",
+    "Layer 6 Presentation Layer",
+    "Layer 5 Session Layer"
+  ],
+  "image_description": "The image displays a partial view of an OSI Model Architecture Diagram, specifically showing the top three layers: Layer 7 (Application Layer), Layer 6 (Presentation Layer), and Layer 5 (Session Layer). The text is presented in a simple, hierarchical list format against a dark background, indicating the beginning of a layered model diagram.",
+  "visual_elements": [
+    "Text labels for OSI layers"
+  ],
+  "relationships": "The diagram lists the layers in descending order from Layer 7 to Layer 5, suggesting a top-down structure of the OSI model. However, no visual connections, arrows, or sequence indicators are present in the image to show how these layers interact or are ordered relative to each other.",
+  "important_information": "The image introduces the concept of the OSI (Open Systems Interconnection) model, which is a conceptual framework used to understand and standardize the functions of a telecommunication or computing system. The top three layers (Application, Presentation, and Session) are responsible for end-user services, data representation, and session management, respectively. This is the beginning of a larger model that includes seven total layers.",
+  "math_solution": ""
+}
